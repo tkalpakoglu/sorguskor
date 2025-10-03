@@ -13,6 +13,7 @@ model User {
   passwordHash  String
   role          String         @default("user")
   createdAt     DateTime       @default(now())
+  refreshHash   String?
   subscriptions Subscription[]
   scans         Scan[]
   MonthlyUsage  MonthlyUsage[]
