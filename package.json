@@ -1,0 +1,9 @@
+{
+  "name": "sorguskor",
+  "private": true,
+  "packageManager": "pnpm@9.6.0",
+  "scripts": {
+    "dev": "echo \"Dev komutlarý adým 3te eklenecek\"",
+    "build": "echo \"Build komutlarý adým 3te eklenecek\""
+  }
+}
