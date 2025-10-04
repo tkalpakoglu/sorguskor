@@ -7,6 +7,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { HttpErrorFilter } from './common/http-exception.filter';
 import { HideSensitiveMiddleware } from './prisma/hide-sensitive.middleware';
+import { RequestIdInterceptor } from './common/request-id.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -14,7 +15,7 @@ async function bootstrap() {
   // Tüm endpointler /api ile başlasın
   app.setGlobalPrefix('api');
 
-  // Hassas alanları (passwordHash, refreshHash) response’lardan temizleyen middleware
+  // Hassas alanları response’tan soy
   (app as any).use(new HideSensitiveMiddleware().use);
 
   // Güvenlik & middleware
@@ -22,6 +23,17 @@ async function bootstrap() {
   app.use(cookieParser());
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.useGlobalFilters(new HttpErrorFilter());
+  app.useGlobalInterceptors(new RequestIdInterceptor());
+
+  // (isteğe bağlı debug)
+  app.use((req: any, _res: any, next: any) => {
+    // console.log('Request Headers:', req.headers);
+    // console.log('Request IP:', req.ip, 'ReqId:', req.id);
+    next();
+  });
+
+  // Graceful shutdown
+  await app.enableShutdownHooks();
 
   // CORS
   const ORIGIN = process.env.CLIENT_URL ?? 'http://localhost:3000';
@@ -33,13 +45,8 @@ async function bootstrap() {
     .setDescription('Auth + Health endpointleri için OpenAPI dokümanı')
     .setVersion('0.1.0')
     .addBearerAuth(
-      {
-        type: 'http',
-        scheme: 'bearer',
-        bearerFormat: 'JWT',
-        in: 'header',
-      },
-      'bearer', // Swagger UI'da "Authorize" şema adı
+      { type: 'http', scheme: 'bearer', bearerFormat: 'JWT', in: 'header' },
+      'bearer',
     )
     .build();
 

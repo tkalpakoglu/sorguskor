@@ -1,20 +1,21 @@
-// apps/api/src/auth/auth.controller.ts
 import {
-  Controller,
-  Post,
-  Get,
   Body,
+  Controller,
+  Get,
+  Post,
   Req,
   Res,
   UseGuards,
+  ForbiddenException,
 } from '@nestjs/common';
-import { Response } from 'express';
-import { ApiBody, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiHeader, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { Response, Request } from 'express';
+import { randomBytes } from 'crypto';
 
 import { AuthService } from './auth.service';
-import { RegisterDto, LoginDto, RefreshDto } from './dto';
 import { JwtAuthGuard } from './jwt.guard';
+import { RegisterDto, LoginDto, RefreshDto } from './dto';
 
 @ApiTags('auth')
 @ApiBearerAuth('bearer')
@@ -22,96 +23,117 @@ import { JwtAuthGuard } from './jwt.guard';
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  // 1) REGISTER
-  @Throttle({ default: { limit: 10, ttl: 60 } }) // 1 dk’da 10 deneme
-  @Post('register')
-  async register(
-    @Body() dto: RegisterDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const { access_token, refresh_token } = await this.auth.register(
-      dto.email,
-      dto.password,
-    );
-
-    // refresh token’ı httpOnly cookie olarak yaz
+  /** Güvenli cookie opsiyonları (ortak) */
+  private cookieOpts(path = '/api/auth') {
     const isProd = process.env.NODE_ENV === 'production';
-    res.cookie('refresh_token', refresh_token, {
+    return {
       httpOnly: true,
       secure: isProd,
       sameSite: isProd ? 'lax' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 gün
-      path: '/api/auth',
-    });
-
-    return { access_token };
-  }
-
-  // 2) LOGIN
-  @Throttle({ default: { limit: 5, ttl: 60 } }) // 1 dk’da 5 deneme
-  @Post('login')
-  async login(
-    @Body() dto: LoginDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const { access_token, refresh_token } = await this.auth.login(
-      dto.email,
-      dto.password,
-    );
-
-    const isProd = process.env.NODE_ENV === 'production';
-    res.cookie('refresh_token', refresh_token, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'lax' : 'lax',
+      path,
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/api/auth',
-    });
+    } as const;
+  }
+
+  /** CSRF cookie opsiyonları (HttpOnly değil) */
+  private csrfCookieOpts(path = '/') {
+    const isProd = process.env.NODE_ENV === 'production';
+    return {
+      httpOnly: false,
+      secure: isProd,
+      sameSite: isProd ? 'lax' : 'lax',
+      path,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    } as const;
+  }
+
+  /** CSRF kontrolü: header ve cookie eşleşmeli */
+  private assertCsrf(req: Request) {
+    const header = req.headers['x-csrf-token'];
+    const cookie = (req as any).cookies?.['csrf_token'];
+    if (!header || !cookie || header !== cookie) {
+      throw new ForbiddenException('CSRF token mismatch');
+    }
+  }
+
+  // 60 sn’de en fazla 10 register
+  @Throttle({ register: { limit: 10, ttl: 60000 } })
+  @Post('register')
+  async register(@Body() dto: RegisterDto, @Res({ passthrough: true }) res: Response) {
+    const { access_token, refresh_token } = await this.auth.register(dto.email, dto.password);
+
+    // Refresh cookie (HttpOnly)
+    res.cookie('refresh_token', refresh_token, this.cookieOpts('/api/auth'));
+
+    // CSRF cookie (HttpOnly değil) + header’a da koy (SPA kolay alsın)
+    const csrf = randomBytes(32).toString('hex');
+    res.cookie('csrf_token', csrf, this.csrfCookieOpts('/'));
+    res.setHeader('x-csrf-token', csrf);
 
     return { access_token };
   }
 
-  // 3) REFRESH (body ile; rotate + cookie günceller)
+  // 60 sn’de en fazla 5 login
+  @Throttle({ login: { limit: 5, ttl: 60000 } })
+  @Post('login')
+  async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
+    const { access_token, refresh_token } = await this.auth.login(dto.email, dto.password);
+
+    // Refresh cookie (HttpOnly)
+    res.cookie('refresh_token', refresh_token, this.cookieOpts('/api/auth'));
+
+    // CSRF cookie + header
+    const csrf = randomBytes(32).toString('hex');
+    res.cookie('csrf_token', csrf, this.csrfCookieOpts('/'));
+    res.setHeader('x-csrf-token', csrf);
+
+    return { access_token };
+  }
+
+  // 60 sn’de en fazla 20 refresh
+  @Throttle({ refresh: { limit: 20, ttl: 60000 } })
   @Post('refresh')
+  @ApiHeader({ name: 'x-csrf-token', required: true, description: 'CSRF koruması için zorunlu' })
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['refresh_token'],
+      required: [], // body zorunlu değil (cookie fallback)
       properties: { refresh_token: { type: 'string' } },
     },
   })
-  async refresh(
-    @Body() dto: RefreshDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    // refreshByToken: verify + DB hash kontrol + ROTATE
-    const { access_token, refresh_token } = await this.auth.refreshByToken(
-      dto.refresh_token,
-    );
+  async refresh(@Body() dto: RefreshDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    // CSRF doğrula
+    this.assertCsrf(req);
 
-    // yeni refresh’i cookie’ye bas (rotate)
-    const isProd = process.env.NODE_ENV === 'production';
-    res.cookie('refresh_token', refresh_token, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'lax' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/api/auth',
-    });
+    // Body yoksa cookie’den al
+    const tokenFromBody = dto.refresh_token;
+    const tokenFromCookie = (req as any).cookies?.['refresh_token'];
+    const tokenToUse = tokenFromBody ?? tokenFromCookie;
+
+    const { access_token, refresh_token } = await this.auth.refreshByToken(tokenToUse);
+
+    // Rotasyon sonrası yeni refresh’i cookie’ye yaz
+    res.cookie('refresh_token', refresh_token, this.cookieOpts('/api/auth'));
 
     return { access_token };
   }
 
-  // 4) LOGOUT (access token zorunlu)
+  // Logout: default throttling
+  @Throttle({ default: { limit: 100, ttl: 60000 } })
   @UseGuards(JwtAuthGuard)
+  @ApiHeader({ name: 'x-csrf-token', required: true, description: 'CSRF koruması için zorunlu' })
   @Post('logout')
   async logout(@Req() req: any, @Res({ passthrough: true }) res: Response) {
-    await this.auth.logout(req.user.userId); // DB’de refresh’i sıfırla
-    res.clearCookie('refresh_token', { path: '/api/auth' }); // cookie temizle
+    // CSRF doğrula
+    this.assertCsrf(req);
+
+    await this.auth.logout(req.user.userId);
+    res.clearCookie('refresh_token', { path: '/api/auth' });
+    res.clearCookie('csrf_token', { path: '/' });
     return { ok: true };
   }
 
-  // 5) ME (örnek korumalı endpoint)
+  @Throttle({ default: { limit: 100, ttl: 60000 } })
   @UseGuards(JwtAuthGuard)
   @Get('me')
   me(@Req() req: any) {

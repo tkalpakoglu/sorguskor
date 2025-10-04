@@ -18,6 +18,10 @@ model User {
   scans         Scan[]
   MonthlyUsage  MonthlyUsage[]
   reviews       Review[]
+  
+  failedLoginCount  Int       @default(0)
+  lastFailedLoginAt DateTime?   // <-- ? önemli
+  lockedUntil       DateTime?   // <-- ? önemli
 }
 
 model Plan {

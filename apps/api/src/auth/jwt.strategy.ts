@@ -1,3 +1,4 @@
+// apps/api/src/auth/jwt.strategy.ts
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
@@ -7,13 +8,17 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor() {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      ignoreExpiration: false,
+      // ✔ Access token’ı doğrulamak için "JWT_ACCESS_SECRET" kullanıyoruz
       secretOrKey: process.env.JWT_ACCESS_SECRET ?? 'devaccess',
+      ignoreExpiration: false,
     });
   }
 
-  // login/register sırasında { sub, email } ile imzalıyoruz → burada sub'u userId olarak döndür.
-  validate(payload: any) {
-    return { userId: payload.sub, email: payload.email };
+  // access token payload’ı: { sub, email }
+  async validate(payload: { sub: string; email: string }) {
+    return {
+      userId: payload.sub,
+      email: payload.email,
+    };
   }
 }

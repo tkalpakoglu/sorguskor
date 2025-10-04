@@ -1,4 +1,3 @@
-// apps/api/src/common/http-exception.filter.ts
 import {
   ArgumentsHost,
   Catch,
@@ -9,18 +8,24 @@ import {
 @Catch(HttpException)
 export class HttpErrorFilter implements ExceptionFilter {
   catch(exception: HttpException, host: ArgumentsHost) {
-    const res = host.switchToHttp().getResponse();
-    const status = exception.getStatus();
-    const payload = exception.getResponse() as any;
+    const ctx = host.switchToHttp();
+    const req = ctx.getRequest<any>();
+    const res = ctx.getResponse<any>();
 
-    // class-validator mesajları veya generic HttpException mesajı
-    const message =
-      (Array.isArray(payload?.message) ? payload.message : payload?.message) ??
-      exception.message;
+    const status = exception.getStatus();
+    const resp = exception.getResponse() as any;
+
+    // class-validator array mesajı olabilir; değilse düz metin
+    const message = Array.isArray(resp?.message)
+      ? resp.message
+      : (resp?.message ?? exception.message);
 
     res.status(status).json({
       statusCode: status,
       message,
+      path: req?.url,
+      requestId: req?.id || req?.headers?.['x-request-id'] || undefined,
+      timestamp: new Date().toISOString(),
     });
   }
 }
